@@ -94,11 +94,13 @@ synchronizer = new Synchronizer(
       writeMissing: true,
       writeDiffering: true,
    },
+   // Include true|false if you want to return the the log of the sync in the promise response...
+   true
 );
 
 synchronizer.run()
-   .then(() => {
-      console.info('Done!');
+   .then((log) => {
+      console.log('Sync finished with log:', log)
    })
    .catch((err) => {
       console.error(`Failed: ${err.message}`, err.stack);

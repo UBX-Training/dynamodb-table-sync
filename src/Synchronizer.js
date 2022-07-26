@@ -35,10 +35,13 @@ module.exports = Class.extend({
     * @param slaves {object[]} array of table definitions
     * @param opts {object} options to determine how this class operates
     */
-   init: function(master, slaves, opts) {
-      this._opts = _.extend({ batchReadLimit: 50, maxRetries: 10, retryDelayBase: 50 }, opts);
 
+   init: function(master, slaves, opts, logging=false) {
+
+      this._opts = _.extend({ batchReadLimit: 50, maxRetries: 10, retryDelayBase: 50 }, opts);
       this._master = _.extend({}, master, { id: (master.region + ':' + master.name), docs: this._makeDocClient(master) });
+
+      if(logging) this._logging = []
 
       this._slaves = _.map(slaves, function(def) {
          return _.extend({}, def, { id: (def.region + ':' + def.name), docs: this._makeDocClient(def, opts.slaveCredentials) });
@@ -81,25 +84,37 @@ module.exports = Class.extend({
    run: function() {
       var self = this;
 
-      return this._compareTableDescriptions()
-         .then(this.compareSlavesToMasterScan.bind(this))
-         .then(function() {
-            if (self._opts.scanForExtra || self._opts.deleteExtra) {
-               return _.reduce(self._slaves, function(prev, slaveDef) {
-                  return prev.then(self.scanSlaveForExtraItems.bind(self, slaveDef));
-               }, Q.when());
-            }
-         })
-         .catch(function(err) {
-            self._abortScanning = true;
-            console.error('Encountered an error while comparing tables', err, err.stack);
-         })
-         .then(this._outputStats.bind(this))
-         .then(function() {
-            if (self._abortScanning) {
-               process.exit(1); // eslint-disable-line no-process-exit
-            }
-         });
+      let proc = new Promise(function(resolve, reject) {
+        self._compareTableDescriptions()
+           .then(self.compareSlavesToMasterScan.bind(self))
+           .then(function() {
+              if (self._opts.scanForExtra || self._opts.deleteExtra) {
+                 return _.reduce(self._slaves, function(prev, slaveDef) {
+                    return prev.then(self.scanSlaveForExtraItems.bind(self, slaveDef));
+                 }, Q.when());
+              }
+           })
+           .catch(function(err) {
+              self._abortScanning = true;
+              console.error('Encountered an error while comparing tables', err, err.stack);
+           })
+           .then(self._outputStats.bind(self))
+           .then(function() {
+              if (self._abortScanning) {
+                 process.exit(1); // eslint-disable-line no-process-exit
+              } else {
+                resolve()
+              }
+           });
+      });
+
+      return Promise.all([proc]).then(function(values) {
+        if(self._logging !== undefined) {
+          return self._logging
+        } else {
+          return true
+        }
+      })
    },
 
    trackScanProgress: function(enabled, approxItems, f) {
@@ -163,17 +178,34 @@ module.exports = Class.extend({
                })
                .then(function() {
                   if (self._opts.verbose) {
-                     console.log(
-                        'Status: have compared %d of approximately %d items from the master table to its slaves',
-                        counter.get() + batch.length,
-                        self._master.approxItems
-                     );
+                    if(self._logging !== undefined) {
+                      self._logging.push(
+                        `Status: have compared ${counter.get() + batch.length} of approximately ${self._master.approxItems} items from the master table to its slaves`
+                      )
+                    } else {                    
+                       console.log(
+                          'Status: have compared %d of approximately %d items from the master table to its slaves',
+                          counter.get() + batch.length,
+                          self._master.approxItems
+                       );
+                    }
+
                   } else {
                      if (counter.get() === 0) {
-                        console.log(
-                           'Status: Comparing approximately %d items from the master table to its slaves',
-                           self._master.approxItems
-                        );
+
+                        if(self._logging !== undefined) {
+                          self._logging.push(
+                            `Status: Comparing approximately ${self._master.approxItems} items from the master table to its slaves`
+                          )
+                        } else {
+                          console.log(
+                             'Status: Comparing approximately %d items from the master table to its slaves',
+                             self._master.approxItems
+                          );
+                        }
+
+
+
                      }
 
                      trackProgress(counter.get() + batch.length);
@@ -194,7 +226,15 @@ module.exports = Class.extend({
    scanSlaveForExtraItems: function(slaveDef) {
       var self = this;
 
-      console.log('\nStarting to scan slave %s for extra items', slaveDef.id);
+
+      if(self._logging !== undefined) {
+        self._logging.push(
+          `Starting to scan slave ${slaveDef.id} for extra items`
+        )
+      } else {                    
+        console.log('\nStarting to scan slave %s for extra items', slaveDef.id);
+      }
+
 
       // Remember that in this function we are only comparing keys (we pass `true` to both
       // `scanTable` and `_batchGetItems`) because we are simply looking for items on the
@@ -206,18 +246,34 @@ module.exports = Class.extend({
                .then(self._compareForExtraItems.bind(self, slaveDef, slaveBatch))
                .then(function() {
                   if (self._opts.verbose) {
-                     console.log(
-                        'Status: have compared %d of approximately %d items from the slave table to the master',
-                        counter.get() + slaveBatch.length,
-                        slaveDef.approxItems
-                     );
+
+                    if(self._logging !== undefined) {
+                      self._logging.push(
+                        `Status: have compared ${counter.get() + slaveBatch.length} of approximately ${slaveDef.approxItems} items from the slave table to the master`
+                      )
+                    } else {                    
+                       console.log(
+                          'Status: have compared %d of approximately %d items from the slave table to the master',
+                          counter.get() + slaveBatch.length,
+                          slaveDef.approxItems
+                       );
+                    }
+
                   } else {
                      // Simple . increment w/% logging
                      if (counter.get() === 0) {
-                        console.log(
-                           'Status: Comparing approximately %d items from the slave table to the master',
-                           slaveDef.approxItems
-                        );
+
+                        if(self._logging !== undefined) {
+                          self._logging.push(
+                            `Status: Comparing approximately ${slaveDef.approxItems} items from the slave table to the master`
+                          )
+                        } else {
+                            console.log(
+                               'Status: Comparing approximately %d items from the slave table to the master',
+                               slaveDef.approxItems
+                            );
+                        }
+
                      }
 
                      trackProgress(counter.get() + slaveBatch.length);
@@ -273,7 +329,15 @@ module.exports = Class.extend({
     */
    slaveMissingItem: function(masterItem, slaveDef, key) {
       if (this._opts.verbose) {
-         console.warn('%s is missing item present in master table: %j', slaveDef.id, key);
+
+        if(this._logging !== undefined) {
+          this._logging.push(
+            `${slaveDef.id} is missing item present in master table: ${key}`
+          )
+        } else {                    
+          console.warn('%s is missing item present in master table: %j', slaveDef.id, key);
+        }
+
       }
 
       if (this._opts.writeMissing) {
@@ -296,7 +360,15 @@ module.exports = Class.extend({
     */
    slaveItemDiffers: function(masterItem, slaveItem, slaveDef, key) {
       if (this._opts.verbose) {
-         console.warn('Item in %s differs from same item in master table: %j', slaveDef.id, key);
+
+        if(this._logging !== undefined) {
+          this._logging.push(
+            `Item in ${slaveDef.id} differs from same item in master table: ${key}`
+          )
+        } else {                    
+          console.warn('Item in %s differs from same item in master table: %j', slaveDef.id, key);
+        }
+
       }
 
       // TODO: output the differences
@@ -336,7 +408,16 @@ module.exports = Class.extend({
     */
    slaveExtraItem: function(key, slaveDef) {
       if (this._opts.verbose) {
-         console.warn('Slave %s had an item that was not in the master table: %j', slaveDef.id, key);
+
+        if(this._logging !== undefined) {
+          this._logging.push(
+            `Slave ${slaveDef.id} had an item that was not in the master table: ${key}`
+          )
+        } else {                    
+           console.warn('Slave %s had an item that was not in the master table: %j', slaveDef.id, key);
+        }
+
+
       }
 
       if (this._opts.deleteExtra) {
@@ -352,7 +433,15 @@ module.exports = Class.extend({
     */
    writeItem: function(item, tableDef) {
       if (this._opts.verbose) {
-         console.log('Writing item to %s: %j', tableDef.id, this._makeKeyFromItem(item));
+
+          if(this._logging !== undefined) {
+            this._logging.push(
+              `Writing item to ${tableDef.id}: ${this._makeKeyFromItem(item)}`
+            )
+          } else {
+            console.log('Writing item to %s: %j', tableDef.id, this._makeKeyFromItem(item));
+          }
+
       }
 
       return Q.ninvoke(tableDef.docs, 'put', { TableName: tableDef.name, Item: _.omit(item, REPLICATION_FIELDS) });
@@ -367,7 +456,15 @@ module.exports = Class.extend({
     */
    deleteItem: function(key, tableDef) {
       if (this._opts.verbose) {
-         console.log('Deleting item from %s: %j', tableDef.id, key);
+
+        if(this._logging !== undefined) {
+          this._logging.push(
+            `Deleting item from ${tableDef.id}: ${key}`
+          )
+        } else {                    
+          console.log('Deleting item from %s: %j', tableDef.id, key);
+        }
+
       }
 
       return Q.ninvoke(tableDef.docs, 'delete', { TableName: tableDef.name, Key: key });
@@ -416,7 +513,13 @@ module.exports = Class.extend({
 
       counter = counter || new Counter();
 
-      console.log('Scanning %s', tableDef.id);
+      if(self._logging !== undefined) {
+        self._logging.push(
+          `Scanning ${tableDef.id}`
+        )
+      } else {
+        console.log('Scanning %s', tableDef.id);
+      }
 
       function loopOnce() {
          var params = { TableName: tableDef.name, ExclusiveStartKey: lastKey };
@@ -426,7 +529,15 @@ module.exports = Class.extend({
          }
 
          if (self._abortScanning) {
-            console.error('Segment %d is stopping because of an error in another segment scanner', segment);
+
+            if(self._logging !== undefined) {
+              self._logging.push(
+                `Segment ${segment} is stopping because of an error in another segment scanner`
+              )
+            } else {
+              console.error('Segment %d is stopping because of an error in another segment scanner', segment);
+            }
+
             return deferred.resolve(counter.get());
          }
 
@@ -465,7 +576,13 @@ module.exports = Class.extend({
                      } else {
                         if (segment !== undefined) {
                            if (self._opts.verbose) {
-                              console.log('Segment %d of %d has completed', segment, self._opts.parallel);
+                              if(self._logging !== undefined) {
+                                self._logging.push(
+                                  `Segment ${segment} of ${self._opts.parallel} has completed`
+                                )
+                              } else {
+                                console.log('Segment %d of %d has completed', segment, self._opts.parallel);
+                              }
                            }
                         }
                         deferred.resolve(counter.get());
@@ -507,13 +624,24 @@ module.exports = Class.extend({
    _compareTableDescriptions: function() {
       var def = Q.defer(),
           describeMaster = this._describeTable(this._master),
-          describeSlaves = Q.all(_.map(this._slaves, _.partial(this._describeTable.bind(this), _, this._opts.slaveCredentials)));
+          describeSlaves = Q.all(_.map(this._slaves, _.partial(this._describeTable.bind(this), _, this._opts.slaveCredentials))),
+          self = this;
 
       function logDescription(title, tableDef, tableDesc) {
-         console.log('%s table %s', title, tableDef.id);
-         console.log('Approx. item count:', tableDesc.ItemCount);
-         console.log('Key schema:', tableDef.schema);
-         console.log();
+
+          if(self._logging !== undefined) {
+            self._logging.push(
+              `${title} table ${tableDef.id}`,
+              `Approx. item count: ${tableDesc.ItemCount}`,
+              `Key schema: ${JSON.stringify(tableDef.schema)}`
+            )
+          } else {
+             console.log('%s table %s', title, tableDef.id);
+             console.log('Approx. item count:', tableDesc.ItemCount);
+             console.log('Key schema:', tableDef.schema);
+             console.log();
+          }
+
       }
 
       function addTableInfoToDefinition(tableDef, desc) {
@@ -548,7 +676,15 @@ module.exports = Class.extend({
          }.bind(this))
          .then(function(unlikeTables) {
             if (!_.isEmpty(unlikeTables)) {
-               console.error('The following slave tables have key schemas that do not match the master table:', unlikeTables);
+
+               if(this._logging !== undefined) {
+                 this._logging.push(
+                   `The following slave tables have key schemas that do not match the master table: ${unlikeTables}`
+                 )
+               } else {
+                 console.error('The following slave tables have key schemas that do not match the master table:', unlikeTables);
+               }
+
                return def.reject(unlikeTables);
             }
 
@@ -581,20 +717,39 @@ module.exports = Class.extend({
    },
 
    _outputStats: function() {
-      console.log('\nSynchronization completed. Stats:');
+      let self = this;
+
+      if(self._logging !== undefined) {
+        self._logging.push(
+          `Synchronization completed. Stats:`
+        )
+      } else {
+        console.log('\nSynchronization completed. Stats:');
+      }
 
       _.each(this._slaves, function(slave) {
          var stats = this._stats[slave.id];
 
-         console.log('\n%s', slave.id);
-         console.log('Had %d items that were the same as the master', stats.sameAs);
-         if (this._opts.deleteExtra || this._opts.scanForExtra) {
-            console.log('Had %d items more than master', stats.extra);
-         } else {
-            console.log('(We did not scan the slave to find if it had "extra" items that the master does not have)');
-         }
-         console.log('Had %d items that were different from the master', stats.differing);
-         console.log('Was missing %d items that the master had', stats.missing);
+          if(self._logging !== undefined) {
+            self._logging.push(
+              `${slave.id}`,
+              `Had ${stats.sameAs} items that were the same as the master`,
+              `${this._opts.deleteExtra || this._opts.scanForExtra ? `Had ${stats.extra} items more than master` : `(We did not scan the slave to find if it had "extra" items that the master does not have)` }`,
+              `Had ${stats.differing} items that were different from the master`,
+              `Was missing ${stats.missing} items that the master had`
+            )
+          } else {
+             console.log('\n%s', slave.id);
+             console.log('Had %d items that were the same as the master', stats.sameAs);
+             if (this._opts.deleteExtra || this._opts.scanForExtra) {
+                console.log('Had %d items more than master', stats.extra);
+             } else {
+                console.log('(We did not scan the slave to find if it had "extra" items that the master does not have)');
+             }
+             console.log('Had %d items that were different from the master', stats.differing);
+             console.log('Was missing %d items that the master had', stats.missing);
+          }
+
       }.bind(this));
 
       return this._stats;
@@ -623,7 +778,15 @@ module.exports = Class.extend({
       var self = this;
 
       if (this._opts.verbose) {
-         console.log('Comparing batch of %d from master to %d from slave %s', masterBatch.length, slaveBatch.length, slaveDef.id);
+
+        if(self._logging !== undefined) {
+          self._logging.push(
+            `Comparing batch of ${masterBatch.length} from master to ${slaveBatch.length} from slave ${slaveDef.id}`
+          )
+        } else {
+           console.log('Comparing batch of %d from master to %d from slave %s', masterBatch.length, slaveBatch.length, slaveDef.id);
+        }
+
       }
 
       return Q.all(_.map(masterBatch, function(masterItem) {
